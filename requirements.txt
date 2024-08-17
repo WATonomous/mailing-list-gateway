@@ -1,0 +1,4 @@
+uvicorn[standard]>=0.30.6<1
+sentry-sdk[fastapi]>=2.13.0<3
+azure-data-tables>=12.5.0<13
+typer>=0.12.4<1

@@ -1,0 +1,18 @@
+services:
+  dev:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_LOG_LEVEL=DEBUG
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - DEPLOYMENT_ENVIRONMENT=dev
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING:?}
+    volumes:
+      - ./src:/app:ro
+    command: 
+      - "--reload"
+  # Azureite is a local emulator for Azure Storage
+  # https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
