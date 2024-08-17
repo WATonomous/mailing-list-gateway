@@ -4,9 +4,10 @@ import os
 import re
 import time
 from textwrap import dedent
+from smtplib import SMTP
 
 import sentry_sdk
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sentry_sdk.crons import capture_checkin
@@ -154,7 +155,7 @@ CODE_TTL_SEC = 15 * 60
 
 
 @app.post("/sign_up")
-def sign_up(req: SignUpRequest):
+def sign_up(req: SignUpRequest, request: Request):
     # validate email
     if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
         raise HTTPException(status_code=400, detail="Invalid email")
@@ -171,7 +172,25 @@ def sign_up(req: SignUpRequest):
         }
     )
 
-    # TODO: Send email with code
+    confirmation_url = f"{os.environ['APP_URL']}/confirm/{req.mailing_list}/{req.email}/{code}"
+
+    smtp = SMTP(os.environ["SMTP_HOST"], port=os.environ["SMTP_PORT"])
+    smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+    # TODO: make this email nicer
+    smtp.sendmail(
+        os.environ["SMTP_USERNAME"],
+        req.email,
+        dedent(
+            f"""
+            Subject: Confirm your email for '{req.mailing_list}' mailing list
+            From: {os.environ["SMTP_USERNAME"]}
+            To: {req.email}
+            
+            Please confirm your email by visiting the following link:
+            {confirmation_url}
+            """
+        ),
+    )
 
     state["num_signups"] += 1
 

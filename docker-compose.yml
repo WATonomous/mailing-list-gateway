@@ -7,12 +7,24 @@ services:
       - APP_LOG_LEVEL=DEBUG
       - SENTRY_DSN=${SENTRY_DSN:-}
       - DEPLOYMENT_ENVIRONMENT=dev
+      - APP_URL=${APP_URL:?}
       - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING:?}
+      - SMTP_HOST=${SMTP_HOST:?}
+      - SMTP_PORT=${SMTP_PORT:?}
+      - SMTP_USERNAME=${SMTP_USERNAME:?}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:?}
     volumes:
       - ./src:/app:ro
     command: 
       - "--reload"
+    depends_on:
+      - azurite
+      - smtp
   # Azureite is a local emulator for Azure Storage
   # https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
+  smtp:
+    image: mailhog/mailhog
+    ports:
+      - "8025:8025"
