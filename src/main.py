@@ -13,10 +13,8 @@ from pydantic import BaseModel
 from watcloud_utils.fastapi import WATcloudFastAPI
 from watcloud_utils.logging import logger, set_up_logging
 
+from google_admin_sdk_utils import DirectoryService
 from utils import get_azure_table_client, random_str
-
-scheduler = BackgroundScheduler()
-scheduler.start()
 
 
 @asynccontextmanager
@@ -35,6 +33,10 @@ def healthcheck(app: WATcloudFastAPI):
 
 
 set_up_logging()
+scheduler = BackgroundScheduler()
+scheduler.start()
+table_client = get_azure_table_client("signups", create_table_if_not_exists=True)
+directory_service = DirectoryService(logger=logger)
 app = WATcloudFastAPI(
     logger=logger,
     lifespan=lifespan,
@@ -47,8 +49,6 @@ app = WATcloudFastAPI(
     },
     health_fns=[healthcheck],
 )
-
-table_client = get_azure_table_client("signups", create_table_if_not_exists=True)
 
 
 class SignUpRequest(BaseModel):
@@ -64,6 +64,9 @@ def sign_up(req: SignUpRequest, request: Request):
     # validate email
     if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
         raise HTTPException(status_code=400, detail="Invalid email")
+
+    if not directory_service.is_whitelisted_group(req.mailing_list):
+        raise HTTPException(status_code=400, detail="Invalid mailing list")
 
     # Generate a random code
     code = random_str(10)
@@ -129,7 +132,7 @@ def sign_up(req: SignUpRequest, request: Request):
             </head>
             <body>
                 <h1>Confirm Your Email</h1>
-                <p>Please confirm your email address by clicking the button or the link below to continue receiving updates from '{req.mailing_list}':</p>
+                <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}":</p>
                 <a href="{confirmation_url}">Confirm Email</a>
                 <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
                 <p class="link-text">{confirmation_url}</p>
@@ -159,10 +162,17 @@ def confirm(mailing_list: str, email: str, code: str):
         app.runtime_info["num_failed_confirms"] += 1
         raise HTTPException(status_code=400, detail="Code expired or invalid")
 
-    # TODO: Add email to mailing list
+    if not directory_service.is_whitelisted_group(mailing_list):
+        raise HTTPException(
+            status_code=500, detail="Invalid mailing list found in the database"
+        )
+
+    directory_service.insert_member(mailing_list, email)
 
     # delete the entity
     table_client.delete_entity(partition_key=mailing_list, row_key=email)
+
+    app.runtime_info["num_successful_confirms"] += 1
 
     return {
         "status": "ok",
