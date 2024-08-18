@@ -19,14 +19,18 @@ from watcloud_utils.logging import logger, set_up_logging
 from google_admin_sdk_utils import DirectoryService
 from utils import get_azure_table_client, random_str
 
+
 class HTMLTextFilter(HTMLParser):
     """
     Converts HTML to plain text.
     Derived from https://stackoverflow.com/a/55825140/4527337
     """
+
     text = ""
+
     def handle_data(self, data):
         self.text += data
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -98,14 +102,11 @@ def sign_up(req: SignUpRequest, request: Request):
 
     # Support both HTML and plain text emails
     # https://stackoverflow.com/a/882770/4527337
-    msg = MIMEMultipart('alternative')
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Confirm Your Email Subscription for '{req.mailing_list}'"
     msg["From"] = os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])
     msg["To"] = req.email
     msg["Reply-To"] = os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])
-
-    # msg["MIME-Version"] = "1.0"
-    # msg["Content-Type"] = "text/html; charset=utf-8"
 
     msg_html_body = f"""
         <body>
