@@ -4,7 +4,7 @@ FROM alpine:3.20.2@sha256:0a4eaa0eecf5f8c050e5bba433f58c052be7587ee8af3e8b3910ef
 ARG DOCKER_METADATA_OUTPUT_JSON='{}'
 ENV DOCKER_METADATA_OUTPUT_JSON=${DOCKER_METADATA_OUTPUT_JSON}
 
-RUN apk add py-pip curl
+RUN apk add py-pip curl git
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt --break-system-packages && rm /tmp/requirements.txt
