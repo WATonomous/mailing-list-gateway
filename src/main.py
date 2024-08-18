@@ -110,12 +110,13 @@ def sign_up(req: SignUpRequest, request: Request):
 
     msg_html_body = f"""
         <body>
-            <h1>Confirm Your Email</h1>
-            <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}". This confirmation link will expire in {CODE_TTL_SEC // 60} minutes.</p>
+            <h1>Confirm Your Subscription</h1>
+            <p>Thanks for signing up for updates from "{req.mailing_list}"!</p>
+            <p>Please confirm your subscription by clicking the button below. This confirmation email will expire in {CODE_TTL_SEC // 60} minutes.</p>
             <a class="confirmation-button" href="{confirmation_url}">Confirm Email</a>
             <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
-            <p class="link-text">{confirmation_url}</p>
-            <p>If you did not request this subscription, no further action is required.</p>
+            <p class="monospace-text">{confirmation_url}</p>
+            <p> This email was sent to {req.email}. If you did not request this subscription, no further action is required. You won't be subscribed if you don't click the confirmation link.</p>
         </body>
     """
     msg_html = f"""
@@ -145,7 +146,7 @@ def sign_up(req: SignUpRequest, request: Request):
                 .confirmation-button:hover {{
                     background-color: #0056b3;
                 }}
-                .link-text {{
+                .monospace-text {{
                     font-family: 'Courier New', monospace;
                 }}
             </style>
