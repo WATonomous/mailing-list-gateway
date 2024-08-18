@@ -189,6 +189,7 @@ def cleanup():
         deleted_count += 1
 
     app.runtime_info["num_expired_signups"] += deleted_count
+    app.runtime_info["last_cleanup_time"] = time.time()
     msg = f"cleanup: Deleted {deleted_count} expired signup(s)."
     logger.info(msg)
     return {"status": "ok", "message": msg}
