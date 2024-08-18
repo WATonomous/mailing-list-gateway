@@ -112,7 +112,7 @@ def sign_up(req: SignUpRequest, request: Request):
         <body>
             <h1>Confirm Your Email</h1>
             <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}". This confirmation link will expire in {CODE_TTL_SEC // 60} minutes.</p>
-            <a href="{confirmation_url}">Confirm Email</a>
+            <a class="confirmation-button" href="{confirmation_url}">Confirm Email</a>
             <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
             <p class="link-text">{confirmation_url}</p>
             <p>If you did not request this subscription, no further action is required.</p>
@@ -134,7 +134,7 @@ def sign_up(req: SignUpRequest, request: Request):
                     background-color: #f4f4f4;
                     padding: 20px;
                 }}
-                a {{
+                .confirmation-button {{
                     background-color: #007BFF;
                     color: white;
                     padding: 10px 20px;
@@ -142,7 +142,7 @@ def sign_up(req: SignUpRequest, request: Request):
                     border-radius: 5px;
                     font-size: 18px;
                 }}
-                a:hover {{
+                .confirmation-button:hover {{
                     background-color: #0056b3;
                 }}
                 .link-text {{
