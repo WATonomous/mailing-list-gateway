@@ -115,7 +115,7 @@ def sign_up(req: SignUpRequest, request: Request):
             <p>Please confirm your subscription by clicking the button below. This confirmation email will expire in {CODE_TTL_SEC // 60} minutes.</p>
             <a class="confirmation-button" href="{confirmation_url}">Confirm Email</a>
             <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
-            <pre class="monospace-text">{confirmation_url}</pre>
+            <pre class="monospace-text" style="text-decoration: none;">{confirmation_url}</pre>
             <p> This email was sent to {req.email}. If you did not request this subscription, no further action is required. You won't be subscribed if you don't click the confirmation link.</p>
         </body>
     """
