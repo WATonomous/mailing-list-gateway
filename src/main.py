@@ -3,7 +3,7 @@ import re
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
-from smtplib import SMTP
+from smtplib import SMTP, SMTPNotSupportedError
 from textwrap import dedent
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -85,63 +85,67 @@ def sign_up(req: SignUpRequest, request: Request):
     )
     confirmation_url = f"{app_url}/confirm/{req.mailing_list}/{urllib.parse.quote_plus(req.email)}/{code}"
 
-    smtp = SMTP(os.environ["SMTP_HOST"], port=os.environ["SMTP_PORT"])
-    smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
-    smtp.sendmail(
-        os.environ["SMTP_USERNAME"],
-        req.email,
-        dedent(
-            f"""
-            Subject: Confirm Your Email Subscription for '{req.mailing_list}'
-            From: {os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])}
-            To: {req.email}
-            Reply-To: {os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])}
-            MIME-Version: 1.0
-            Content-Type: text/html; charset="utf-8"
+    with SMTP(os.environ["SMTP_HOST"], port=os.environ["SMTP_PORT"]) as smtp:
+        try:
+            smtp.starttls()
+        except SMTPNotSupportedError as e:
+            logger.warning(f"SMTP server does not support STARTTLS: {e}. Attempting to send email without encryption.")
+        smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        smtp.sendmail(
+            os.environ["SMTP_USERNAME"],
+            req.email,
+            dedent(
+                f"""
+                Subject: Confirm Your Email Subscription for '{req.mailing_list}'
+                From: {os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])}
+                To: {req.email}
+                Reply-To: {os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])}
+                MIME-Version: 1.0
+                Content-Type: text/html; charset="utf-8"
 
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Email Confirmation</title>
-                <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        line-height: 1.6;
-                        margin: 20px;
-                        color: #333;
-                        background-color: #f4f4f4;
-                        padding: 20px;
-                    }}
-                    a {{
-                        background-color: #007BFF;
-                        color: white;
-                        padding: 10px 20px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-size: 18px;
-                    }}
-                    a:hover {{
-                        background-color: #0056b3;
-                    }}
-                    .link-text {{
-                        font-family: 'Courier New', monospace;
-                    }}
-                </style>
-            </head>
-            <body>
-                <h1>Confirm Your Email</h1>
-                <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}":</p>
-                <a href="{confirmation_url}">Confirm Email</a>
-                <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
-                <p class="link-text">{confirmation_url}</p>
-                <p>If you did not request this subscription, no further action is required.</p>
-            </body>
-            </html>
-            """
-        ),
-    )
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Email Confirmation</title>
+                    <style>
+                        body {{
+                            font-family: Arial, sans-serif;
+                            line-height: 1.6;
+                            margin: 20px;
+                            color: #333;
+                            background-color: #f4f4f4;
+                            padding: 20px;
+                        }}
+                        a {{
+                            background-color: #007BFF;
+                            color: white;
+                            padding: 10px 20px;
+                            text-decoration: none;
+                            border-radius: 5px;
+                            font-size: 18px;
+                        }}
+                        a:hover {{
+                            background-color: #0056b3;
+                        }}
+                        .link-text {{
+                            font-family: 'Courier New', monospace;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Confirm Your Email</h1>
+                    <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}":</p>
+                    <a href="{confirmation_url}">Confirm Email</a>
+                    <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
+                    <p class="link-text">{confirmation_url}</p>
+                    <p>If you did not request this subscription, no further action is required.</p>
+                </body>
+                </html>
+                """
+            ),
+        )
 
     app.runtime_info["num_signups"] += 1
 
