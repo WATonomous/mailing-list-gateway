@@ -148,6 +148,7 @@ def sign_up(req: SignUpRequest, request: Request):
                 }}
                 .monospace-text {{
                     font-family: 'Courier New', monospace;
+                    text-decoration: none;
                 }}
             </style>
         </head>
