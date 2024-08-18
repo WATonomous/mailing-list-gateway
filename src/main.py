@@ -93,9 +93,9 @@ def sign_up(req: SignUpRequest, request: Request):
         dedent(
             f"""
             Subject: Confirm Your Email Subscription for '{req.mailing_list}'
-            From: {os.environ["SMTP_USERNAME"]}
+            From: {os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])}
             To: {req.email}
-            Reply-To: {os.environ["SMTP_USERNAME"]}
+            Reply-To: {os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])}
             MIME-Version: 1.0
             Content-Type: text/html; charset="utf-8"
 
