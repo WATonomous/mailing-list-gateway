@@ -3,6 +3,9 @@ import re
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from html.parser import HTMLParser
 from smtplib import SMTP, SMTPNotSupportedError
 from textwrap import dedent
 
@@ -16,6 +19,14 @@ from watcloud_utils.logging import logger, set_up_logging
 from google_admin_sdk_utils import DirectoryService
 from utils import get_azure_table_client, random_str
 
+class HTMLTextFilter(HTMLParser):
+    """
+    Converts HTML to plain text.
+    Derived from https://stackoverflow.com/a/55825140/4527337
+    """
+    text = ""
+    def handle_data(self, data):
+        self.text += data
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,67 +96,78 @@ def sign_up(req: SignUpRequest, request: Request):
     )
     confirmation_url = f"{app_url}/confirm/{req.mailing_list}/{urllib.parse.quote_plus(req.email)}/{code}"
 
+    # Support both HTML and plain text emails
+    # https://stackoverflow.com/a/882770/4527337
+    msg = MIMEMultipart('alternative')
+    msg["Subject"] = f"Confirm Your Email Subscription for '{req.mailing_list}'"
+    msg["From"] = os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])
+    msg["To"] = req.email
+    msg["Reply-To"] = os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])
+
+    # msg["MIME-Version"] = "1.0"
+    # msg["Content-Type"] = "text/html; charset=utf-8"
+
+    msg_html_body = f"""
+        <body>
+            <h1>Confirm Your Email</h1>
+            <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}". This confirmation link will expire in {CODE_TTL_SEC // 60} minutes.</p>
+            <a href="{confirmation_url}">Confirm Email</a>
+            <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
+            <p class="link-text">{confirmation_url}</p>
+            <p>If you did not request this subscription, no further action is required.</p>
+        </body>
+    """
+    msg_html = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Email Confirmation</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    margin: 20px;
+                    color: #333;
+                    background-color: #f4f4f4;
+                    padding: 20px;
+                }}
+                a {{
+                    background-color: #007BFF;
+                    color: white;
+                    padding: 10px 20px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-size: 18px;
+                }}
+                a:hover {{
+                    background-color: #0056b3;
+                }}
+                .link-text {{
+                    font-family: 'Courier New', monospace;
+                }}
+            </style>
+        </head>
+        {msg_html_body}
+        </html>
+    """
+    msg_html_parser = HTMLTextFilter()
+    msg_html_parser.feed(msg_html_body)
+    msg_text = msg_html_parser.text
+
+    msg.attach(MIMEText(msg_text, "plain"))
+    msg.attach(MIMEText(msg_html, "html"))
+
     with SMTP(os.environ["SMTP_HOST"], port=os.environ["SMTP_PORT"]) as smtp:
         try:
             smtp.starttls()
         except SMTPNotSupportedError as e:
-            logger.warning(f"SMTP server does not support STARTTLS: {e}. Attempting to send email without encryption.")
+            logger.warning(
+                f"SMTP server does not support STARTTLS: {e}. Attempting to send email without encryption."
+            )
         smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
-        smtp.sendmail(
-            os.environ["SMTP_USERNAME"],
-            req.email,
-            dedent(
-                f"""
-                Subject: Confirm Your Email Subscription for '{req.mailing_list}'
-                From: {os.getenv("SMTP_SEND_AS", os.environ["SMTP_USERNAME"])}
-                To: {req.email}
-                Reply-To: {os.getenv("SMTP_REPLY_TO", os.environ["SMTP_USERNAME"])}
-                MIME-Version: 1.0
-                Content-Type: text/html; charset="utf-8"
-
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Email Confirmation</title>
-                    <style>
-                        body {{
-                            font-family: Arial, sans-serif;
-                            line-height: 1.6;
-                            margin: 20px;
-                            color: #333;
-                            background-color: #f4f4f4;
-                            padding: 20px;
-                        }}
-                        a {{
-                            background-color: #007BFF;
-                            color: white;
-                            padding: 10px 20px;
-                            text-decoration: none;
-                            border-radius: 5px;
-                            font-size: 18px;
-                        }}
-                        a:hover {{
-                            background-color: #0056b3;
-                        }}
-                        .link-text {{
-                            font-family: 'Courier New', monospace;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>Confirm Your Email</h1>
-                    <p>Please confirm your email address by clicking the button or the link below to receiving updates from "{req.mailing_list}":</p>
-                    <a href="{confirmation_url}">Confirm Email</a>
-                    <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
-                    <p class="link-text">{confirmation_url}</p>
-                    <p>If you did not request this subscription, no further action is required.</p>
-                </body>
-                </html>
-                """
-            ),
-        )
+        smtp.send_message(msg)
 
     app.runtime_info["num_signups"] += 1
 
