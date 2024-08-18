@@ -74,7 +74,7 @@ class SignUpRequest(BaseModel):
 CODE_TTL_SEC = 15 * 60
 
 
-@app.post("/sign_up")
+@app.post("/sign-up")
 def sign_up(req: SignUpRequest, request: Request):
     # validate email
     if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
