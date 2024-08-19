@@ -98,6 +98,7 @@ def sign_up(req: SignUpRequest, request: Request):
             "PartitionKey": make_azure_table_key([req.mailing_list]),
             "RowKey": make_azure_table_key([req.email, code]),
             "CreatedAt": time.time(),
+            "ConfirmedAt": 0,
             "MailingList": req.mailing_list,
             "Email": req.email,
         }
@@ -220,7 +221,7 @@ def cleanup():
     """
     # find unconfirmed signups that are older than CODE_TTL_SEC
     expired_entities = table_client.query_entities(
-        query_filter=f"ConfirmedAt eq null and CreatedAt lt @ExpiryTime",
+        query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime",
         select=["PartitionKey", "RowKey"],
         parameters={"ExpiryTime": time.time() - CODE_TTL_SEC},
         headers={"Accept": "application/json;odata=nometadata"},
@@ -245,7 +246,7 @@ def commit():
     Adding to the mailing list is idempotent, so we can safely retry this operation.
     """
     confirmed_entities = table_client.query_entities(
-        query_filter="ConfirmedAt ge 0",
+        query_filter="ConfirmedAt gt 0",
         select=["PartitionKey", "RowKey", "MailingList", "Email"],
         headers={"Accept": "application/json;odata=nometadata"},
     )
