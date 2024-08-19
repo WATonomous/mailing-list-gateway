@@ -34,7 +34,7 @@ class HTMLTextFilter(HTMLParser):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(cleanup, trigger=CronTrigger.from_crontab("* * * * *"))
+    scheduler.add_job(clean_up, trigger=CronTrigger.from_crontab("* * * * *"))
     scheduler.add_job(commit, trigger=CronTrigger.from_crontab("* * * * *"))
     yield
     scheduler.shutdown()
@@ -214,8 +214,8 @@ def confirm(mailing_list: str, email: str, code: str):
     }
 
 
-@app.post("/cleanup")
-def cleanup():
+@app.post("/clean-up")
+def clean_up():
     """
     Clean up expired signups.
     """
@@ -235,7 +235,7 @@ def cleanup():
 
     app.runtime_info["num_expired_signups"] += deleted_count
     app.runtime_info["last_cleanup_time"] = time.time()
-    msg = f"cleanup: Deleted {deleted_count} expired signup(s)."
+    msg = f"clean_up: Deleted {deleted_count} expired signup(s)."
     logger.info(msg)
     return {"status": "ok", "message": msg}
 
