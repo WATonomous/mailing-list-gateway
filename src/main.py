@@ -7,17 +7,17 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
 from smtplib import SMTP, SMTPNotSupportedError
-from textwrap import dedent
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from watcloud_utils.fastapi import WATcloudFastAPI
 from watcloud_utils.logging import logger, set_up_logging
 
 from google_admin_sdk_utils import DirectoryService
-from utils import get_azure_table_client, random_str
+from utils import get_azure_table_client, random_str, make_azure_table_key
 
 
 class HTMLTextFilter(HTMLParser):
@@ -35,14 +35,19 @@ class HTMLTextFilter(HTMLParser):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(cleanup, trigger=CronTrigger.from_crontab("* * * * *"))
+    scheduler.add_job(commit, trigger=CronTrigger.from_crontab("* * * * *"))
     yield
     scheduler.shutdown()
 
 
 def healthcheck(app: WATcloudFastAPI):
-    cleanup_delay_threshold = 120
-    if time.time() - app.runtime_info["last_cleanup_time"] > cleanup_delay_threshold:
-        msg = f"Last cleanup was more than {cleanup_delay_threshold} seconds ago."
+    healthcheck_threshold_sec = 120
+    if time.time() - app.runtime_info["last_cleanup_time"] > healthcheck_threshold_sec:
+        msg = f"Last cleanup was more than {healthcheck_threshold_sec} seconds ago."
+        logger.error(msg)
+        raise HTTPException(status_code=500, detail=msg)
+    if time.time() - app.runtime_info["last_commit_time"] > healthcheck_threshold_sec:
+        msg = f"Last commit was more than {healthcheck_threshold_sec} seconds ago."
         logger.error(msg)
         raise HTTPException(status_code=500, detail=msg)
 
@@ -60,7 +65,9 @@ app = WATcloudFastAPI(
         "num_successful_confirms": 0,
         "num_failed_confirms": 0,
         "num_expired_signups": 0,
+        "num_successful_commits": 0,
         "last_cleanup_time": time.time(),
+        "last_commit_time": time.time(),
     },
     health_fns=[healthcheck],
 )
@@ -71,7 +78,7 @@ class SignUpRequest(BaseModel):
     email: str
 
 
-CODE_TTL_SEC = 15 * 60
+CODE_TTL_SEC = 60 * 60 * 24
 
 
 @app.post("/sign-up")
@@ -84,14 +91,15 @@ def sign_up(req: SignUpRequest, request: Request):
         raise HTTPException(status_code=400, detail="Invalid mailing list")
 
     # Generate a random code
-    code = random_str(10)
+    code = random_str(32)
 
     table_client.upsert_entity(
         entity={
-            "PartitionKey": req.mailing_list,
-            "RowKey": req.email,
+            "PartitionKey": make_azure_table_key([req.mailing_list]),
+            "RowKey": make_azure_table_key([req.email, code]),
             "CreatedAt": time.time(),
-            "Code": code,
+            "MailingList": req.mailing_list,
+            "Email": req.email,
         }
     )
 
@@ -112,7 +120,7 @@ def sign_up(req: SignUpRequest, request: Request):
         <body>
             <h1>Confirm Your Subscription</h1>
             <p>Thanks for signing up for updates from "{req.mailing_list}"!</p>
-            <p>Please confirm your subscription by clicking the button below. This confirmation email will expire in {CODE_TTL_SEC // 60} minutes.</p>
+            <p>Please confirm your subscription by clicking the button below. This confirmation email will expire in {int(CODE_TTL_SEC / 60 / 60)} hours.</p>
             <a class="confirmation-button" href="{confirmation_url}">Confirm Email</a>
             <p>If the button above does not work, please copy and paste the following URL into your browser:</p>
             <pre class="monospace-text">{confirmation_url}</pre>
@@ -178,33 +186,30 @@ def sign_up(req: SignUpRequest, request: Request):
 
 @app.get("/confirm/{mailing_list}/{email}/{code}")
 def confirm(mailing_list: str, email: str, code: str):
-    from azure.core.exceptions import ResourceNotFoundError
-
+    """
+    Confirm the subscription and schedule the addition to the mailing list.
+    We schedule the addition instead of adding it immediately to minimize the room
+    for error in this handler (e.g., network issues when adding to the mailing list).
+    """
     try:
-        entity = table_client.get_entity(partition_key=mailing_list, row_key=email)
+        # update_entity merges the  new entity with the existing entity, and throws
+        # ResourceNotFoundError if the entity does not exist.
+        table_client.update_entity(
+            entity={
+                "PartitionKey": make_azure_table_key([mailing_list]),
+                "RowKey": make_azure_table_key([email, code]),
+                "ConfirmedAt": time.time(),
+            }
+        )
     except ResourceNotFoundError:
         app.runtime_info["num_failed_confirms"] += 1
-        raise HTTPException(status_code=400, detail="Code expired or invalid")
-
-    if entity["Code"] != code or time.time() - entity["CreatedAt"] > CODE_TTL_SEC:
-        app.runtime_info["num_failed_confirms"] += 1
-        raise HTTPException(status_code=400, detail="Code expired or invalid")
-
-    if not directory_service.is_whitelisted_group(mailing_list):
-        raise HTTPException(
-            status_code=500, detail="Invalid mailing list found in the database"
-        )
-
-    directory_service.insert_member(mailing_list, email)
-
-    # delete the entity
-    table_client.delete_entity(partition_key=mailing_list, row_key=email)
+        raise HTTPException(status_code=400, detail="Link expired or invalid. Please sign up again.")
 
     app.runtime_info["num_successful_confirms"] += 1
 
     return {
         "status": "ok",
-        "message": f"Subscription confirmed! '{email}' has been added to the '{mailing_list}' mailing list.",
+        "message": f"Subscription confirmed! Details: {mailing_list=}, {email=}",
     }
 
 
@@ -213,8 +218,9 @@ def cleanup():
     """
     Clean up expired signups.
     """
+    # find unconfirmed signups that are older than CODE_TTL_SEC
     expired_entities = table_client.query_entities(
-        query_filter=f"CreatedAt lt @ExpiryTime",
+        query_filter=f"ConfirmedAt eq null and CreatedAt lt @ExpiryTime",
         select=["PartitionKey", "RowKey"],
         parameters={"ExpiryTime": time.time() - CODE_TTL_SEC},
         headers={"Accept": "application/json;odata=nometadata"},
@@ -229,5 +235,41 @@ def cleanup():
     app.runtime_info["num_expired_signups"] += deleted_count
     app.runtime_info["last_cleanup_time"] = time.time()
     msg = f"cleanup: Deleted {deleted_count} expired signup(s)."
+    logger.info(msg)
+    return {"status": "ok", "message": msg}
+
+@app.post("/commit")
+def commit():
+    """
+    Add confirmed signups to the mailing list.
+    Adding to the mailing list is idempotent, so we can safely retry this operation.
+    """
+    confirmed_entities = table_client.query_entities(
+        query_filter="ConfirmedAt ge 0",
+        select=["PartitionKey", "RowKey", "MailingList", "Email"],
+        headers={"Accept": "application/json;odata=nometadata"},
+    )
+
+    commit_count = 0
+    for entity in confirmed_entities:
+        mailing_list = entity["MailingList"]
+        email = entity["Email"]
+
+        # Sanity check to ensure the mailing list is valid
+        if not directory_service.is_whitelisted_group(mailing_list):
+            raise HTTPException(
+                status_code=500, detail="Invalid mailing list found in the database"
+            )
+
+        directory_service.insert_member(mailing_list, email)
+
+        table_client.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
+
+        commit_count += 1
+
+    app.runtime_info["num_successful_commits"] += commit_count
+    app.runtime_info["last_commit_time"] = time.time()
+
+    msg = f"commit: Committed {commit_count} confirmed signup(s) to the mailing list."
     logger.info(msg)
     return {"status": "ok", "message": msg}

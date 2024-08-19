@@ -1,5 +1,8 @@
 import os
+import random
+import string
 
+from slugify import slugify
 from watcloud_utils.logging import logger
 from watcloud_utils.typer import app
 
@@ -42,14 +45,36 @@ def delete_azure_table(table_name: str):
 
 
 @app.command()
-def random_str(length: int = 10):
+def random_str(length: int = 32, chars: str = string.ascii_lowercase):
     """
     Generate a random string of the given length.
-    """
-    import random
-    import string
 
-    return "".join(random.choices(string.ascii_letters, k=length))
+    The default dictionary of characters to choose from is the lowercase alphabet.
+    """
+    return "".join(random.choices(chars, k=length))
+
+@app.command()
+def make_azure_table_key(strs: list[str]):
+    r"""
+    Generate an Azure Table key from the given strings.
+
+    The generated key conforms to the following requirements:
+    - (azure) up to 1024 characters
+    - (azure) does not contain the characters '/', '\', '#', '?', or control characters
+    - (custom) the beginning of each str is guaranteed to be included in the key
+    - (custom) the generated key is deterministic for the given input
+
+    Requirements derived from:
+    - https://learn.microsoft.com/en-us/rest/api/storageservices/understanding-the-table-service-data-model
+    """
+    # Just a naive implementation for now
+    max_len_per_str = 1024 // len(strs)
+
+    key = "".join(slugify(s)[:max_len_per_str] for s in strs)
+
+    return key
+
+
 
 
 if __name__ == "__main__":
