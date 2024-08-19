@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
 
 def healthcheck(app: WATcloudFastAPI):
-    healthcheck_threshold_sec = 120
+    healthcheck_threshold_sec = 600
     if time.time() - app.runtime_info["last_cleanup_time"] > healthcheck_threshold_sec:
         msg = f"Last cleanup was more than {healthcheck_threshold_sec} seconds ago."
         logger.error(msg)
