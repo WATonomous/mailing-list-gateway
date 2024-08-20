@@ -36,9 +36,9 @@ class DirectoryService:
     def get_group(self, group_key: str):
         return self.service.groups().get(groupKey=group_key).execute()
 
-    def insert_member(self, group_key: str, email: str):
+    def insert_member(self, group_key: str, email: str, num_retries: int = 2):
         try:
-            self.service.members().insert(groupKey=group_key, body={"email": email}).execute()
+            self.service.members().insert(groupKey=group_key, body={"email": email}).execute(num_retries=num_retries)
         except HttpError as e:
             if e.resp.status == 409:
                 self.logger.warning(f"Member {email} already exists in group {group_key}. Ignoring.")
