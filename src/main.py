@@ -57,18 +57,22 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 table_client = get_azure_table_client("signups", create_table_if_not_exists=True)
 directory_service = DirectoryService(logger=logger)
+initial_runtime_info = {
+    "num_signups": 0,
+    "num_successful_confirms": 0,
+    "num_failed_confirms": 0,
+    "num_expired_signups": 0,
+    "num_successful_commits": 0,
+    "last_cleanup_time": time.time(),
+    "last_commit_time": time.time(),
+}
+if os.environ.get("DEPLOYMENT_ENVIRONMENT"):
+    initial_runtime_info["deployment_environment"] = os.environ["DEPLOYMENT_ENVIRONMENT"]
+
 app = WATcloudFastAPI(
     logger=logger,
     lifespan=lifespan,
-    initial_runtime_info={
-        "num_signups": 0,
-        "num_successful_confirms": 0,
-        "num_failed_confirms": 0,
-        "num_expired_signups": 0,
-        "num_successful_commits": 0,
-        "last_cleanup_time": time.time(),
-        "last_commit_time": time.time(),
-    },
+    initial_runtime_info=initial_runtime_info,
     health_fns=[healthcheck],
 )
 
