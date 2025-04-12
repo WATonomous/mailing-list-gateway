@@ -90,7 +90,7 @@ class AdminAddRequest(BaseModel):
 
 
 CODE_TTL_SEC = 60 * 60 * 24
-
+ADMIN_KEY = os.environ.get("ADMIN_KEY", None)
 
 @app.post("/sign-up")
 def sign_up(req: SignUpRequest, request: Request):
@@ -203,8 +203,7 @@ def admin_add(req: AdminAddRequest):
     This is for use by administrators who have already verified the email address.
     """
     # Validate admin key
-    admin_key = os.environ.get("ADMIN_KEY")
-    if not admin_key or req.admin_key != admin_key:
+    if not ADMIN_KEY or req.admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
     # Validate email
