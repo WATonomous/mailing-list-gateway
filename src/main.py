@@ -239,8 +239,7 @@ def admin_remove(req: AdminRemoveRequest):
     This is for use by administrators who need to remove a member from a mailing list.
     """
     # Validate admin key
-    admin_key = os.environ.get("ADMIN_KEY")
-    if not admin_key or req.admin_key != admin_key:
+    if not ADMIN_KEY or req.admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
     # Validate email
