@@ -63,6 +63,7 @@ initial_runtime_info = {
     "num_failed_confirms": 0,
     "num_expired_signups": 0,
     "num_successful_commits": 0,
+    "num_admin_adds": 0,
     "last_cleanup_time": time.time(),
     "last_commit_time": time.time(),
 }
@@ -80,6 +81,12 @@ app = WATcloudFastAPI(
 class SignUpRequest(BaseModel):
     mailing_list: str
     email: str
+
+
+class AdminAddRequest(BaseModel):
+    mailing_list: str
+    email: str
+    admin_key: str
 
 
 CODE_TTL_SEC = 60 * 60 * 24
@@ -187,6 +194,36 @@ def sign_up(req: SignUpRequest, request: Request):
     app.runtime_info["num_signups"] += 1
 
     return {"status": "ok", "message": f"Confirmation email sent to '{req.email}'."}
+
+
+@app.post("/admin/add")
+def admin_add(req: AdminAddRequest):
+    """
+    Admin endpoint to directly add an email to a mailing list without confirmation.
+    This is for use by administrators who have already verified the email address.
+    """
+    # Validate admin key
+    admin_key = os.environ.get("ADMIN_KEY")
+    if not admin_key or req.admin_key != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    # Validate email
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    # Validate mailing list
+    if not directory_service.is_whitelisted_group(req.mailing_list):
+        raise HTTPException(status_code=400, detail="Invalid mailing list")
+    
+    # Directly add to mailing list
+    directory_service.insert_member(req.mailing_list, req.email)
+    
+    # Update runtime info
+    app.runtime_info["num_admin_adds"] += 1
+    
+    logger.info(f"Admin added {req.email} to mailing list {req.mailing_list} without confirmation")
+    
+    return {"status": "ok", "message": f"Added '{req.email}' to '{req.mailing_list}' without confirmation."}
 
 
 @app.get("/confirm/{mailing_list}/{email}/{code}")
