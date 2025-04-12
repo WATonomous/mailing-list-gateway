@@ -64,6 +64,7 @@ initial_runtime_info = {
     "num_expired_signups": 0,
     "num_successful_commits": 0,
     "num_admin_adds": 0,
+    "num_admin_removes": 0,
     "last_cleanup_time": time.time(),
     "last_commit_time": time.time(),
 }
@@ -84,6 +85,12 @@ class SignUpRequest(BaseModel):
 
 
 class AdminAddRequest(BaseModel):
+    mailing_list: str
+    email: str
+    admin_key: str
+
+
+class AdminRemoveRequest(BaseModel):
     mailing_list: str
     email: str
     admin_key: str
@@ -223,6 +230,36 @@ def admin_add(req: AdminAddRequest):
     logger.info(f"Admin added {req.email} to mailing list {req.mailing_list} without confirmation")
     
     return {"status": "ok", "message": f"Added '{req.email}' to '{req.mailing_list}' without confirmation."}
+
+
+@app.post("/admin/remove")
+def admin_remove(req: AdminRemoveRequest):
+    """
+    Admin endpoint to directly remove an email from a mailing list.
+    This is for use by administrators who need to remove a member from a mailing list.
+    """
+    # Validate admin key
+    admin_key = os.environ.get("ADMIN_KEY")
+    if not admin_key or req.admin_key != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    # Validate email
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    # Validate mailing list
+    if not directory_service.is_whitelisted_group(req.mailing_list):
+        raise HTTPException(status_code=400, detail="Invalid mailing list")
+    
+    # Remove from mailing list
+    directory_service.remove_member(req.mailing_list, req.email)
+    
+    # Update runtime info
+    app.runtime_info["num_admin_removes"] = app.runtime_info.get("num_admin_removes", 0) + 1
+    
+    logger.info(f"Admin removed {req.email} from mailing list {req.mailing_list}")
+    
+    return {"status": "ok", "message": f"Removed '{req.email}' from '{req.mailing_list}'."}
 
 
 @app.get("/confirm/{mailing_list}/{email}/{code}")
