@@ -206,7 +206,7 @@ def sign_up(req: SignUpRequest, request: Request):
 @app.post("/admin/add")
 def admin_add(req: AdminAddRequest):
     """
-    Admin endpoint to directly add an email to a mailing list without confirmation.
+    Admin endpoint to add an email to a mailing list without confirmation.
     This is for use by administrators who have already verified the email address.
     """
     # Validate admin key
@@ -221,15 +221,29 @@ def admin_add(req: AdminAddRequest):
     if not directory_service.is_whitelisted_group(req.mailing_list):
         raise HTTPException(status_code=400, detail="Invalid mailing list")
     
-    # Directly add to mailing list
-    directory_service.insert_member(req.mailing_list, req.email)
+    # Generate a random code
+    code = random_str(32)
+
+    now = time.time()
+
+    # Add to queue with immediate confirmation
+    table_client.upsert_entity(
+        entity={
+            "PartitionKey": make_azure_table_key([req.mailing_list]),
+            "RowKey": make_azure_table_key([req.email, code]),
+            "CreatedAt": now,
+            "ConfirmedAt": now,  # Already confirmed for admin operations
+            "MailingList": req.mailing_list,
+            "Email": req.email
+        }
+    )
     
     # Update runtime info
     app.runtime_info["num_admin_adds"] += 1
     
-    logger.info(f"Admin added {req.email} to mailing list {req.mailing_list} without confirmation")
+    logger.info(f"Admin queued {req.email} for addition to mailing list {req.mailing_list}")
     
-    return {"status": "ok", "message": f"Added '{req.email}' to '{req.mailing_list}' without confirmation."}
+    return {"status": "ok", "message": f"Queued '{req.email}' for addition to '{req.mailing_list}'."}
 
 
 @app.post("/admin/remove")
@@ -250,7 +264,7 @@ def admin_remove(req: AdminRemoveRequest):
     if not directory_service.is_whitelisted_group(req.mailing_list):
         raise HTTPException(status_code=400, detail="Invalid mailing list")
     
-    # Remove from mailing list
+    # Remove from mailing list directly
     directory_service.remove_member(req.mailing_list, req.email)
     
     # Update runtime info
