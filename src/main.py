@@ -249,7 +249,7 @@ def admin_add(req: AdminAddRequest):
 @app.post("/admin/remove")
 def admin_remove(req: AdminRemoveRequest):
     """
-    Admin endpoint to directly remove an email from a mailing list.
+    Admin endpoint to queue an email for removal from a mailing list.
     This is for use by administrators who need to remove a member from a mailing list.
     """
     # Validate admin key
@@ -264,15 +264,30 @@ def admin_remove(req: AdminRemoveRequest):
     if not directory_service.is_whitelisted_group(req.mailing_list):
         raise HTTPException(status_code=400, detail="Invalid mailing list")
     
-    # Remove from mailing list directly
-    directory_service.remove_member(req.mailing_list, req.email)
+    # Generate a random code
+    code = random_str(32)
+
+    now = time.time()
+
+    # Add to queue with immediate confirmation and a special flag for removal
+    table_client.upsert_entity(
+        entity={
+            "PartitionKey": make_azure_table_key([req.mailing_list]),
+            "RowKey": make_azure_table_key([req.email, code]),
+            "CreatedAt": now,
+            "ConfirmedAt": now,  # Already confirmed for admin operations
+            "MailingList": req.mailing_list,
+            "Email": req.email,
+            "IsRemoval": True  # Flag to indicate this is a removal operation
+        }
+    )
     
     # Update runtime info
     app.runtime_info["num_admin_removes"] = app.runtime_info.get("num_admin_removes", 0) + 1
     
-    logger.info(f"Admin removed {req.email} from mailing list {req.mailing_list}")
+    logger.info(f"Admin queued {req.email} for removal from mailing list {req.mailing_list}")
     
-    return {"status": "ok", "message": f"Removed '{req.email}' from '{req.mailing_list}'."}
+    return {"status": "ok", "message": f"Queued '{req.email}' for removal from '{req.mailing_list}'."}
 
 
 @app.get("/confirm/{mailing_list}/{email}/{code}")
@@ -308,10 +323,11 @@ def confirm(mailing_list: str, email: str, code: str):
 def clean_up():
     """
     Clean up expired signups.
+    Excludes entries marked for deletion (IsRemoval=True) as these are handled by the commit process.
     """
-    # find unconfirmed signups that are older than CODE_TTL_SEC
+    # find unconfirmed signups that are older than CODE_TTL_SEC and not marked for deletion
     expired_entities = table_client.query_entities(
-        query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime",
+        query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime and (IsRemoval eq false or IsRemoval eq null)",
         select=["PartitionKey", "RowKey"],
         parameters={"ExpiryTime": time.time() - CODE_TTL_SEC},
         headers={"Accept": "application/json;odata=nometadata"},
@@ -332,19 +348,21 @@ def clean_up():
 @app.post("/commit")
 def commit():
     """
-    Add confirmed signups to the mailing list.
+    Process confirmed signups to the mailing list.
     Adding to the mailing list is idempotent, so we can safely retry this operation.
     """
     confirmed_entities = table_client.query_entities(
         query_filter="ConfirmedAt gt 0",
-        select=["PartitionKey", "RowKey", "MailingList", "Email"],
+        select=["PartitionKey", "RowKey", "MailingList", "Email", "IsRemoval"],
         headers={"Accept": "application/json;odata=nometadata"},
     )
 
-    commit_count = 0
+    commit_additions = 0
+    commit_removals = 0
     for entity in confirmed_entities:
         mailing_list = entity["MailingList"]
         email = entity["Email"]
+        is_removal = entity.get("IsRemoval", False)
 
         # Sanity check to ensure the mailing list is valid
         if not directory_service.is_whitelisted_group(mailing_list):
@@ -352,15 +370,22 @@ def commit():
                 status_code=500, detail="Invalid mailing list found in the database"
             )
 
-        directory_service.insert_member(mailing_list, email)
+        if is_removal:
+            # Process removal operation
+            directory_service.remove_member(mailing_list, email)
+            logger.info(f"Removed {email} from mailing list {mailing_list}")
+            commit_removals += 1
+        else:
+            # Process addition operation
+            directory_service.insert_member(mailing_list, email)
+            logger.info(f"Added {email} to mailing list {mailing_list}")
+            commit_additions += 1
 
         table_client.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
 
-        commit_count += 1
-
-    app.runtime_info["num_successful_commits"] += commit_count
+    app.runtime_info["num_successful_commits"] += commit_additions + commit_removals
     app.runtime_info["last_commit_time"] = time.time()
 
-    msg = f"commit: Committed {commit_count} confirmed signup(s) to the mailing list."
+    msg = f"commit: Processed {commit_additions} additions and {commit_removals} removals to the mailing list."
     logger.info(msg)
     return {"status": "ok", "message": msg}
