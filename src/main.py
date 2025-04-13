@@ -58,11 +58,13 @@ scheduler.start()
 table_client = get_azure_table_client("signups", create_table_if_not_exists=True)
 directory_service = DirectoryService(logger=logger)
 initial_runtime_info = {
-    "num_signups": 0,
+    "num_pending_operations": 0,
     "num_successful_confirms": 0,
     "num_failed_confirms": 0,
-    "num_expired_signups": 0,
+    "num_expired_operations": 0,
     "num_successful_commits": 0,
+    "num_admin_adds": 0,
+    "num_admin_removes": 0,
     "last_cleanup_time": time.time(),
     "last_commit_time": time.time(),
 }
@@ -82,8 +84,20 @@ class SignUpRequest(BaseModel):
     email: str
 
 
-CODE_TTL_SEC = 60 * 60 * 24
+class AdminAddRequest(BaseModel):
+    mailing_list: str
+    email: str
+    admin_key: str
 
+
+class AdminRemoveRequest(BaseModel):
+    mailing_list: str
+    email: str
+    admin_key: str
+
+
+CODE_TTL_SEC = 60 * 60 * 24
+ADMIN_KEY = os.environ.get("ADMIN_KEY", None)
 
 @app.post("/sign-up")
 def sign_up(req: SignUpRequest, request: Request):
@@ -105,6 +119,7 @@ def sign_up(req: SignUpRequest, request: Request):
             "ConfirmedAt": 0,
             "MailingList": req.mailing_list,
             "Email": req.email,
+            "IsRemoval": False
         }
     )
 
@@ -184,9 +199,96 @@ def sign_up(req: SignUpRequest, request: Request):
         smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
         smtp.send_message(msg)
 
-    app.runtime_info["num_signups"] += 1
+    app.runtime_info["num_pending_operations"] += 1
 
     return {"status": "ok", "message": f"Confirmation email sent to '{req.email}'."}
+
+
+@app.post("/admin/add")
+def admin_add(req: AdminAddRequest):
+    """
+    Admin endpoint to add an email to a mailing list without confirmation.
+    This is for use by administrators who have already verified the email address.
+    """
+    # Validate admin key
+    if not ADMIN_KEY or req.admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    # Validate email
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    # Validate mailing list
+    if not directory_service.is_whitelisted_group(req.mailing_list):
+        raise HTTPException(status_code=400, detail="Invalid mailing list")
+    
+    # Generate a random code
+    code = random_str(32)
+
+    now = time.time()
+
+    # Add to queue with immediate confirmation
+    table_client.upsert_entity(
+        entity={
+            "PartitionKey": make_azure_table_key([req.mailing_list]),
+            "RowKey": make_azure_table_key([req.email, code]),
+            "CreatedAt": now,
+            "ConfirmedAt": now,  # Already confirmed for admin operations
+            "MailingList": req.mailing_list,
+            "Email": req.email
+        }
+    )
+    
+    # Update runtime info
+    app.runtime_info["num_admin_adds"] += 1
+    
+    logger.info(f"Admin queued {req.email} for addition to mailing list {req.mailing_list}")
+    
+    return {"status": "ok", "message": f"Queued '{req.email}' for addition to '{req.mailing_list}'."}
+
+
+@app.post("/admin/remove")
+def admin_remove(req: AdminRemoveRequest):
+    """
+    Admin endpoint to queue an email for removal from a mailing list.
+    This is for use by administrators who need to remove a member from a mailing list.
+    """
+    # Validate admin key
+    if not ADMIN_KEY or req.admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    # Validate email
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", req.email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    # Validate mailing list
+    if not directory_service.is_whitelisted_group(req.mailing_list):
+        raise HTTPException(status_code=400, detail="Invalid mailing list")
+    
+    # Generate a random code
+    code = random_str(32)
+
+    now = time.time()
+
+    # Add to queue with immediate confirmation and a special flag for removal
+    table_client.upsert_entity(
+        entity={
+            "PartitionKey": make_azure_table_key([req.mailing_list]),
+            "RowKey": make_azure_table_key([req.email, code]),
+            "CreatedAt": now,
+            "ConfirmedAt": now,  # Already confirmed for admin operations
+            "MailingList": req.mailing_list,
+            "Email": req.email,
+            "IsRemoval": True  # Flag to indicate this is a removal operation
+        }
+    )
+    
+    # Update runtime info
+    app.runtime_info["num_admin_removes"] = app.runtime_info.get("num_admin_removes", 0) + 1
+    
+    logger.info(f"Admin queued {req.email} for removal from mailing list {req.mailing_list}")
+    
+    return {"status": "ok", "message": f"Queued '{req.email}' for removal from '{req.mailing_list}'."}
 
 
 @app.get("/confirm/{mailing_list}/{email}/{code}")
@@ -208,7 +310,7 @@ def confirm(mailing_list: str, email: str, code: str):
         )
     except ResourceNotFoundError:
         app.runtime_info["num_failed_confirms"] += 1
-        raise HTTPException(status_code=400, detail="Link expired or invalid. Please sign up again.")
+        raise HTTPException(status_code=400, detail="Link expired or invalid. Please try again.")
 
     app.runtime_info["num_successful_confirms"] += 1
 
@@ -221,60 +323,78 @@ def confirm(mailing_list: str, email: str, code: str):
 @app.post("/clean-up")
 def clean_up():
     """
-    Clean up expired signups.
+    Clean up expired pending operations.
+    Excludes entries marked for deletion (IsRemoval=True) as these are handled by the commit process.
     """
-    # find unconfirmed signups that are older than CODE_TTL_SEC
+    # find unconfirmed operations that are older than CODE_TTL_SEC and not marked for deletion
+    # Azure Table Storage doesn't support direct null checks, so we need to use a different approach
     expired_entities = table_client.query_entities(
         query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime",
-        select=["PartitionKey", "RowKey"],
+        select=["PartitionKey", "RowKey", "IsRemoval"],
         parameters={"ExpiryTime": time.time() - CODE_TTL_SEC},
         headers={"Accept": "application/json;odata=nometadata"},
     )
+    
+    # Filter out entities marked for deletion in Python code
+    filtered_entities = [
+        entity for entity in expired_entities 
+        if entity.get("IsRemoval") is not True
+    ]
+    
     deleted_count = 0
-    for entity in expired_entities:
+    for entity in filtered_entities:
         table_client.delete_entity(
             partition_key=entity["PartitionKey"], row_key=entity["RowKey"]
         )
         deleted_count += 1
 
-    app.runtime_info["num_expired_signups"] += deleted_count
+    app.runtime_info["num_expired_operations"] += deleted_count
     app.runtime_info["last_cleanup_time"] = time.time()
-    msg = f"clean_up: Deleted {deleted_count} expired signup(s)."
+    msg = f"clean_up: Deleted {deleted_count} expired pending operation(s)."
     logger.info(msg)
     return {"status": "ok", "message": msg}
 
 @app.post("/commit")
 def commit():
     """
-    Add confirmed signups to the mailing list.
+    Process confirmed signups to the mailing list.
     Adding to the mailing list is idempotent, so we can safely retry this operation.
     """
     confirmed_entities = table_client.query_entities(
         query_filter="ConfirmedAt gt 0",
-        select=["PartitionKey", "RowKey", "MailingList", "Email"],
+        select=["PartitionKey", "RowKey", "MailingList", "Email", "IsRemoval"],
         headers={"Accept": "application/json;odata=nometadata"},
     )
 
-    commit_count = 0
+    commit_additions = 0
+    commit_removals = 0
     for entity in confirmed_entities:
         mailing_list = entity["MailingList"]
         email = entity["Email"]
+        is_removal = entity.get("IsRemoval", False)
 
         # Sanity check to ensure the mailing list is valid
         if not directory_service.is_whitelisted_group(mailing_list):
             raise HTTPException(
-                status_code=500, detail="Invalid mailing list found in the database"
+                status_code=500, detail=f"Invalid mailing list found in the database: {mailing_list}"
             )
 
-        directory_service.insert_member(mailing_list, email)
+        if is_removal:
+            # Process removal operation
+            directory_service.remove_member(mailing_list, email)
+            logger.info(f"Removed {email} from mailing list {mailing_list}")
+            commit_removals += 1
+        else:
+            # Process addition operation
+            directory_service.insert_member(mailing_list, email)
+            logger.info(f"Added {email} to mailing list {mailing_list}")
+            commit_additions += 1
 
         table_client.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
 
-        commit_count += 1
-
-    app.runtime_info["num_successful_commits"] += commit_count
+    app.runtime_info["num_successful_commits"] += commit_additions + commit_removals
     app.runtime_info["last_commit_time"] = time.time()
 
-    msg = f"commit: Committed {commit_count} confirmed signup(s) to the mailing list."
+    msg = f"commit: Processed {commit_additions + commit_removals} operations ({commit_additions} additions and {commit_removals} removals) to the mailing list."
     logger.info(msg)
     return {"status": "ok", "message": msg}

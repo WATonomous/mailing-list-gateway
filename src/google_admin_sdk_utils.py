@@ -45,5 +45,14 @@ class DirectoryService:
             else:
                 raise
 
+    def remove_member(self, group_key: str, email: str, num_retries: int = 2):
+        try:
+            self.service.members().delete(groupKey=group_key, memberKey=email).execute(num_retries=num_retries)
+        except HttpError as e:
+            if e.resp.status == 404:
+                self.logger.warning(f"Member {email} not found in group {group_key}. Ignoring.")
+            else:
+                raise
+
     def is_whitelisted_group(self, group_key: str):
         return group_key in GROUPS_WHITELIST
