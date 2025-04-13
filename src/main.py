@@ -58,10 +58,10 @@ scheduler.start()
 table_client = get_azure_table_client("signups", create_table_if_not_exists=True)
 directory_service = DirectoryService(logger=logger)
 initial_runtime_info = {
-    "num_signups": 0,
+    "num_pending_operations": 0,
     "num_successful_confirms": 0,
     "num_failed_confirms": 0,
-    "num_expired_signups": 0,
+    "num_expired_operations": 0,
     "num_successful_commits": 0,
     "num_admin_adds": 0,
     "num_admin_removes": 0,
@@ -119,6 +119,7 @@ def sign_up(req: SignUpRequest, request: Request):
             "ConfirmedAt": 0,
             "MailingList": req.mailing_list,
             "Email": req.email,
+            "IsRemoval": False
         }
     )
 
@@ -198,7 +199,7 @@ def sign_up(req: SignUpRequest, request: Request):
         smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
         smtp.send_message(msg)
 
-    app.runtime_info["num_signups"] += 1
+    app.runtime_info["num_pending_operations"] += 1
 
     return {"status": "ok", "message": f"Confirmation email sent to '{req.email}'."}
 
@@ -309,7 +310,7 @@ def confirm(mailing_list: str, email: str, code: str):
         )
     except ResourceNotFoundError:
         app.runtime_info["num_failed_confirms"] += 1
-        raise HTTPException(status_code=400, detail="Link expired or invalid. Please sign up again.")
+        raise HTTPException(status_code=400, detail="Link expired or invalid. Please try again.")
 
     app.runtime_info["num_successful_confirms"] += 1
 
@@ -322,10 +323,10 @@ def confirm(mailing_list: str, email: str, code: str):
 @app.post("/clean-up")
 def clean_up():
     """
-    Clean up expired signups.
+    Clean up expired pending operations.
     Excludes entries marked for deletion (IsRemoval=True) as these are handled by the commit process.
     """
-    # find unconfirmed signups that are older than CODE_TTL_SEC and not marked for deletion
+    # find unconfirmed operations that are older than CODE_TTL_SEC and not marked for deletion
     # Azure Table Storage doesn't support direct null checks, so we need to use a different approach
     expired_entities = table_client.query_entities(
         query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime",
@@ -347,9 +348,9 @@ def clean_up():
         )
         deleted_count += 1
 
-    app.runtime_info["num_expired_signups"] += deleted_count
+    app.runtime_info["num_expired_operations"] += deleted_count
     app.runtime_info["last_cleanup_time"] = time.time()
-    msg = f"clean_up: Deleted {deleted_count} expired signup(s)."
+    msg = f"clean_up: Deleted {deleted_count} expired pending operation(s)."
     logger.info(msg)
     return {"status": "ok", "message": msg}
 
