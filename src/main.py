@@ -326,14 +326,22 @@ def clean_up():
     Excludes entries marked for deletion (IsRemoval=True) as these are handled by the commit process.
     """
     # find unconfirmed signups that are older than CODE_TTL_SEC and not marked for deletion
+    # Azure Table Storage doesn't support direct null checks, so we need to use a different approach
     expired_entities = table_client.query_entities(
-        query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime and (IsRemoval eq false or IsRemoval eq null)",
-        select=["PartitionKey", "RowKey"],
+        query_filter=f"ConfirmedAt eq 0 and CreatedAt lt @ExpiryTime",
+        select=["PartitionKey", "RowKey", "IsRemoval"],
         parameters={"ExpiryTime": time.time() - CODE_TTL_SEC},
         headers={"Accept": "application/json;odata=nometadata"},
     )
+    
+    # Filter out entities marked for deletion in Python code
+    filtered_entities = [
+        entity for entity in expired_entities 
+        if entity.get("IsRemoval") is not True
+    ]
+    
     deleted_count = 0
-    for entity in expired_entities:
+    for entity in filtered_entities:
         table_client.delete_entity(
             partition_key=entity["PartitionKey"], row_key=entity["RowKey"]
         )
