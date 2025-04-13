@@ -376,7 +376,7 @@ def commit():
         # Sanity check to ensure the mailing list is valid
         if not directory_service.is_whitelisted_group(mailing_list):
             raise HTTPException(
-                status_code=500, detail="Invalid mailing list found in the database"
+                status_code=500, detail=f"Invalid mailing list found in the database: {mailing_list}"
             )
 
         if is_removal:
