@@ -395,6 +395,6 @@ def commit():
     app.runtime_info["num_successful_commits"] += commit_additions + commit_removals
     app.runtime_info["last_commit_time"] = time.time()
 
-    msg = f"commit: Processed {commit_additions} additions and {commit_removals} removals to the mailing list."
+    msg = f"commit: Processed {commit_additions + commit_removals} operations ({commit_additions} additions and {commit_removals} removals) to the mailing list."
     logger.info(msg)
     return {"status": "ok", "message": msg}
